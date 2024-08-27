@@ -1,0 +1,9 @@
+[submodule "fairchem"]
+	path = fairchem
+	url = git@github.com:FAIR-Chem/fairchem.git
+[submodule "JMP"]
+	path = JMP
+	url = git@github.com:facebookresearch/JMP.git
+[submodule "MDsim"]
+	path = MDsim
+	url = git@github.com:kyonofx/MDsim.git
