@@ -1,0 +1,20 @@
+includes:
+  - configs/s2ef/MD22/datasets/base.yml
+
+dataset:
+  train:
+    format: lmdb
+    src: /data/shared/MLFF/MD22/95_lmdb/AT-AT/train/
+    key_mapping:
+      y: energy
+      force: forces
+    transforms:
+      normalizer:
+        energy:
+          mean: -50080.08
+          stdev: 0.47309175
+        forces:
+          mean: 0
+          stdev: 1.2109985
+  val:
+    src: /data/shared/MLFF/MD22/95_lmdb/AT-AT/val/
