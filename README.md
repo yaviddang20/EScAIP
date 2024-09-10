@@ -54,7 +54,7 @@ Use `main.py` to train the models. Th usage is similar to FairChem (refer to the
 Single GPU training:
 
 ```bash
-python --mode train --config-yml {CONFIG} --run-dir {RUNDIR} --timestamp-id {TIMESTAMP} --checkpoint {CHECKPOINT}
+python main.py --mode train --config-yml {CONFIG} --run-dir {RUNDIR} --timestamp-id {TIMESTAMP} --checkpoint {CHECKPOINT}
 ```
 
 Use `start_exp.py` to start a run in the background:

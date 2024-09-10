@@ -16,6 +16,7 @@ class GlobalConfigs:
 @dataclass
 class MolecularGraphConfigs:
     use_pbc: bool
+    use_pbc_single: bool
     otf_graph: bool
     max_neighbors: int
     max_radius: float

@@ -115,15 +115,6 @@ def main():
         logging.warning("Setting max_radius to 5.0 for equivariance check")
         config["model"]["max_radius"] = 5.0
 
-    if (
-        "atten_name" in config["model"]
-        and config["model"]["atten_name"] == "memory_efficient"
-    ):
-        logging.warning(
-            "Setting atten_name to scaled_dot_product for equivariance check"
-        )
-        config["model"]["atten_name"] = "scaled_dot_product"
-
     if config["checkpoint"] is None:
         logging.warning(
             "No checkpoint provided. Using random weights for equivariance check"
