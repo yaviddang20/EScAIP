@@ -122,6 +122,9 @@ def pad_batch(
     device = atomic_numbers.device
     num_nodes, _ = neighbor_list.shape
     pad_size = max_num_nodes_per_batch * num_graphs - num_nodes
+    assert (
+        pad_size >= 0
+    ), "Number of nodes exceeds the maximum number of nodes per batch"
 
     # pad the features
     atomic_numbers = F.pad(atomic_numbers, (0, pad_size), value=0)

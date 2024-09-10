@@ -1,5 +1,3 @@
-import logging
-import time
 from functools import partial
 
 import torch
@@ -8,7 +6,7 @@ import torch_geometric
 
 from fairchem.core.common.registry import registry
 from fairchem.core.common.utils import conditional_grad
-from fairchem.core.models.base import BaseModel
+from fairchem.core.models.base import GraphModelMixin
 
 from fairchem.core.models.gemnet_oc.layers.force_scaler import ForceScaler
 from fairchem.core.models.scn.smearing import (
@@ -40,14 +38,11 @@ from .utils.xformers_utils import (
 
 
 @registry.register_model("EScAIP")
-class EfficientlyScaledAttentionInteratomicPotential(BaseModel):
+class EfficientlyScaledAttentionInteratomicPotential(nn.Module, GraphModelMixin):
     """ """
 
     def __init__(
         self,
-        num_atoms: int,  # not used
-        bond_feat_dim: int,  # not used
-        num_targets: int,  # not used
         **kwargs,
     ):
         super().__init__()
@@ -128,33 +123,33 @@ class EfficientlyScaledAttentionInteratomicPotential(BaseModel):
         self.linear_initializer = nn.init.xavier_uniform_
         self.apply(self._init_weights)
 
-        self.show_timing_info = False
-        self.counter = 0
+        # enable torch.set_float32_matmul_precision('high') if not using fp16 backbone
+        if not self.global_cfg.use_fp16_backbone:
+            torch.set_float32_matmul_precision("high")
 
     def data_preprocess(self, data) -> GraphAttentionData:
         # atomic numbers
         atomic_numbers = data.atomic_numbers.long()
 
         # generate graph
-        (
-            edge_index,
-            edge_distance,
-            edge_distance_vec,
-            cell_offsets,
-            cell_offset_distances,
-            neighbors,
-        ) = self.generate_graph(
-            data,
-            self.molecular_graph_cfg.max_radius,
-            self.molecular_graph_cfg.max_neighbors,
-            self.molecular_graph_cfg.use_pbc,
-            self.molecular_graph_cfg.otf_graph,
-            self.molecular_graph_cfg.enforce_max_neighbors_strictly,
+        self.use_pbc_single = (
+            self.molecular_graph_cfg.use_pbc_single
+        )  # TODO: remove this when FairChem fixes the bug
+        graph = self.generate_graph(
+            data=data,
+            cutoff=self.molecular_graph_cfg.max_radius,
+            max_neighbors=self.molecular_graph_cfg.max_neighbors,
+            use_pbc=self.molecular_graph_cfg.use_pbc,
+            otf_graph=self.molecular_graph_cfg.otf_graph,
+            enforce_max_neighbors_strictly=self.molecular_graph_cfg.enforce_max_neighbors_strictly,
+            use_pbc_single=self.molecular_graph_cfg.use_pbc_single,
         )
 
         # sort edge index according to receiver node
         edge_index, edge_attr = torch_geometric.utils.sort_edge_index(
-            edge_index, [edge_distance, edge_distance_vec], sort_by_row=False
+            graph.edge_index,
+            [graph.edge_distance, graph.edge_distance_vec],
+            sort_by_row=False,
         )
         edge_distance, edge_distance_vec = edge_attr[0], edge_attr[1]
 
@@ -277,8 +272,6 @@ class EfficientlyScaledAttentionInteratomicPotential(BaseModel):
 
     @conditional_grad(torch.enable_grad())
     def forward(self, data: torch_geometric.data.Batch):
-        start_time = time.time()
-
         # gradient force
         if self.regress_forces and not self.global_cfg.direct_force:
             data.pos.requires_grad_(True)
@@ -303,18 +296,6 @@ class EfficientlyScaledAttentionInteratomicPotential(BaseModel):
             node_padding_mask=x.node_padding_mask,
             graph_padding_mask=x.graph_padding_mask,
         )
-
-        if self.show_timing_info is True:
-            torch.cuda.synchronize()
-            logging.info(
-                "{} Time: {}\tMemory: {}\t{}".format(
-                    self.counter,
-                    time.time() - start_time,
-                    len(data.pos),
-                    torch.cuda.max_memory_allocated() / 1000000,
-                )
-            )
-        self.counter += 1
 
         return outputs
 

@@ -24,8 +24,10 @@ def mptrj_dict_to_pyg_data(dic, sid):
     )  # natoms 3
 
     # Output
-    energy = torch.tensor(dic["uncorrected_total_energy"], dtype=torch.float)
     force = torch.tensor(dic["force"], dtype=torch.float)  # natoms 3
+    uncorrected_total_energy = torch.tensor(
+        dic["uncorrected_total_energy"], dtype=torch.float
+    )
     corrected_total_energy = torch.tensor(
         dic["corrected_total_energy"], dtype=torch.float
     )
@@ -34,18 +36,31 @@ def mptrj_dict_to_pyg_data(dic, sid):
     e_per_atom_relaxed = torch.tensor(dic["e_per_atom_relaxed"], dtype=torch.float)
     ef_per_atom_relaxed = torch.tensor(dic["ef_per_atom_relaxed"], dtype=torch.float)
     stress = torch.tensor(dic["stress"], dtype=torch.float)
-    magmom = torch.tensor(dic["magmom"], dtype=torch.float)
-    bandgap = torch.tensor(dic["bandgap"], dtype=torch.float)
+    magmom = (
+        torch.tensor(dic["magmom"], dtype=torch.float)
+        if dic["magmom"] is not None
+        else torch.zeros_like(atomic_numbers).float()
+    )
+    bandgap = (
+        torch.tensor(dic["bandgap"], dtype=torch.float)
+        if dic["bandgap"] is not None
+        else torch.tensor(0.0, dtype=torch.float)
+    )
 
     mp_id = dic["mp_id"]
+
+    natoms = torch.tensor([pos.shape[0]] * 1, dtype=torch.int64)
+    fixed_idx = torch.zeros(natoms).float()
 
     data = Data(
         atomic_numbers=atomic_numbers,
         pos=pos,
         cell=cell,
-        y=energy,
+        natoms=natoms,
+        fixed=fixed_idx,
         force=force,
         corrected_total_energy=corrected_total_energy,
+        uncorrected_total_energy=uncorrected_total_energy,
         energy_per_atom=energy_per_atom,
         ef_per_atom=ef_per_atom,
         e_per_atom_relaxed=e_per_atom_relaxed,
