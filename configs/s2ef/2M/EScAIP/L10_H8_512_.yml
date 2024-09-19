@@ -18,10 +18,10 @@ model:
   avg_num_nodes: 73.0
   enforce_max_neighbors_strictly: true
   distance_function: gaussian
-  max_neighbors: 30
+  max_neighbors: 20
   max_num_elements: 90
   max_num_nodes_per_batch: 150 # Average 73, Max 220, use 150 for padding
-  max_radius: 6.0
+  max_radius: 12.0
   otf_graph: true
   use_pbc: true
 
@@ -68,5 +68,5 @@ optim:
   clip_grad_norm: 10
   ema_decay: 0.999
 
-  eval_every: 3000
+  eval_every: 30000
   # checkpoint_evey: 50000
