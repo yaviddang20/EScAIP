@@ -164,6 +164,7 @@ class EfficientlyScaledAttentionInteratomicPotential(nn.Module, GraphModelMixin)
             distance_vec=edge_distance_vec,
             edge_index=edge_index,
             lmax=self.gnn_cfg.node_direction_expansion_size - 1,
+            num_nodes=data.num_nodes,
         )
 
         # convert to neighbor list

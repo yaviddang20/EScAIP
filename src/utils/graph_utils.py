@@ -6,7 +6,7 @@ from e3nn.o3._spherical_harmonics import _spherical_harmonics
 
 @torch.jit.script
 def get_node_direction_expansion(
-    distance_vec: torch.Tensor, edge_index: torch.Tensor, lmax: int
+    distance_vec: torch.Tensor, edge_index: torch.Tensor, lmax: int, num_nodes: int
 ):
     """
     Calculate Bond-Orientational Order (BOO) for each node in the graph.
@@ -20,7 +20,8 @@ def get_node_direction_expansion(
         y=distance_vec[:, 1],
         z=distance_vec[:, 2],
     )
-    node_boo = scatter(edge_sh, edge_index[1], dim=0, reduce="mean")
+    node_boo = torch.zeros((num_nodes, edge_sh.shape[1]), device=edge_sh.device)
+    node_boo = scatter(edge_sh, edge_index[1], dim=0, out=node_boo, reduce="mean")
     sh_index = torch.arange(lmax + 1, device=node_boo.device)
     sh_index = torch.repeat_interleave(sh_index, 2 * sh_index + 1)
     node_boo = scatter(node_boo**2, sh_index, dim=1, reduce="sum").sqrt()
