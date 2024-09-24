@@ -1,4 +1,7 @@
 from functools import partial
+import logging
+import time
+import os
 
 import torch
 import torch.nn as nn
@@ -16,7 +19,14 @@ from fairchem.core.models.scn.smearing import (
     SiLUSmearing,
 )
 
-from .configs import EScAIPConfigs, init_configs
+from .configs import (
+    EScAIPConfigs,
+    GlobalConfigs,
+    MolecularGraphConfigs,
+    GraphNeuralNetworksConfigs,
+    RegularizationConfigs,
+    init_configs,
+)
 from .custom_types import GraphAttentionData
 from .modules import (
     EfficientGraphAttentionBlock,
@@ -73,41 +83,7 @@ class EfficientlyScaledAttentionInteratomicPotential(nn.Module, GraphModelMixin)
             basis_width_scalar=2.0,
         )
 
-        # Input Block
-        self.input_block = InputBlock(
-            global_cfg=self.global_cfg,
-            molecular_graph_cfg=self.molecular_graph_cfg,
-            gnn_cfg=self.gnn_cfg,
-            reg_cfg=self.reg_cfg,
-        )
-
-        # Transformer Blocks
-        self.transformer_blocks = nn.ModuleList(
-            [
-                EfficientGraphAttentionBlock(
-                    global_cfg=self.global_cfg,
-                    molecular_graph_cfg=self.molecular_graph_cfg,
-                    gnn_cfg=self.gnn_cfg,
-                    reg_cfg=self.reg_cfg,
-                )
-                for _ in range(self.gnn_cfg.num_layers)
-            ]
-        )
-
-        # Readout Layer
-        self.readout_layers = nn.ModuleList(
-            [
-                ReadoutBlock(
-                    global_cfg=self.global_cfg,
-                    gnn_cfg=self.gnn_cfg,
-                    reg_cfg=self.reg_cfg,
-                )
-                for _ in range(self.gnn_cfg.num_layers + 1)
-            ]
-        )
-
-        # Output Block
-        self.output_block = OutputBlock(
+        self.exportable_model = EScAIPExportable(
             global_cfg=self.global_cfg,
             molecular_graph_cfg=self.molecular_graph_cfg,
             gnn_cfg=self.gnn_cfg,
@@ -118,14 +94,33 @@ class EfficientlyScaledAttentionInteratomicPotential(nn.Module, GraphModelMixin)
         if self.regress_forces and not self.global_cfg.direct_force:
             self.force_scaler = ForceScaler()
 
-        # Init weights
-        # self.linear_initializer = get_initializer("heorthogonal")
-        self.linear_initializer = nn.init.xavier_uniform_
-        self.apply(self._init_weights)
-
         # enable torch.set_float32_matmul_precision('high') if not using fp16 backbone
         if not self.global_cfg.use_fp16_backbone:
             torch.set_float32_matmul_precision("high")
+        torch._logging.set_logs(recompiles=True)
+
+    def export_and_compile_model(
+        self,
+        data: torch_geometric.data.Batch,
+        export_dir: str = "./",  # TODO: set to checkpoint_dir, but no access now
+    ):
+        start_time = time.time()
+        x = self.data_preprocess(data)
+        export_path = os.path.join(export_dir, "exported_model.pt2")
+        if not os.path.exists(export_path):
+            logging.info("Exporting model...")
+            exported_model = torch.export.export(self.exportable_model, (x,))
+            torch.export.save(exported_model, export_path)
+        else:
+            logging.info(f"Loding model from {export_path}")
+            exported_model = torch.export.load(export_path)
+        logging.info("Compiling model...")
+        compiled_exported_model = torch.compile(exported_model.module())
+        logging.info("Warmup...")
+        _ = compiled_exported_model(x)
+        logging.info("Success")
+        logging.info(f"Time elapsed: {time.time() - start_time:.2f}s")
+        return compiled_exported_model
 
     def data_preprocess(self, data) -> GraphAttentionData:
         # atomic numbers
@@ -203,6 +198,7 @@ class EfficientlyScaledAttentionInteratomicPotential(nn.Module, GraphModelMixin)
             neighbor_mask=neighbor_mask,
             node_batch=data.batch,
             num_graphs=data.num_graphs,
+            batch_size=self.global_cfg.batch_size,
         )
 
         # patch singleton atom
@@ -239,9 +235,130 @@ class EfficientlyScaledAttentionInteratomicPotential(nn.Module, GraphModelMixin)
         )
         return x
 
-    @torch.compile()
+    @conditional_grad(torch.enable_grad())
+    def forward(self, data: torch_geometric.data.Batch):
+        # gradient force
+        if self.regress_forces and not self.global_cfg.direct_force:
+            data.pos.requires_grad_(True)
+
+        # preprocess data
+        x = self.data_preprocess(data)
+
+        if self.global_cfg.use_export:
+            if not hasattr(self, "compiled_exported_model"):
+                self.compiled_exported_model = self.export_and_compile_model(data)
+            # forward pass
+            energy_output, force_output = self.compiled_exported_model(x)
+        elif self.global_cfg.use_compile:
+            energy_output, force_output = torch.compile(self.exportable_model)(x)
+        else:
+            energy_output, force_output = self.exportable_model(x)
+
+        outputs = {"energy": energy_output}
+
+        if self.regress_forces:
+            if not self.global_cfg.direct_force:
+                force_output = self.force_scaler.calc_forces_and_update(
+                    energy_output, data.pos
+                )
+            outputs["forces"] = force_output
+
+        outputs = unpad_results(
+            results=outputs,
+            node_padding_mask=x.node_padding_mask,
+            graph_padding_mask=x.graph_padding_mask,
+        )
+
+        return outputs
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        # no weight decay on layer norms and embeddings
+        # ref: https://discuss.pytorch.org/t/weight-decay-in-the-optimizers-is-a-bad-idea-especially-with-batchnorm/16994
+        no_wd_list = []
+        named_parameters_list = [name for name, _ in self.named_parameters()]
+        for module_name, module in self.named_modules():
+            if isinstance(module, (nn.Linear, nn.Embedding, nn.LayerNorm, nn.RMSNorm)):
+                for parameter_name, _ in module.named_parameters():
+                    if isinstance(module, torch.nn.Linear):
+                        if "weight" in parameter_name:
+                            continue
+                    global_parameter_name = module_name + "." + parameter_name
+                    assert global_parameter_name in named_parameters_list
+                    no_wd_list.append(global_parameter_name)
+        return set(no_wd_list)
+
+
+class EScAIPExportable(nn.Module):
+    def __init__(
+        self,
+        global_cfg: GlobalConfigs,
+        molecular_graph_cfg: MolecularGraphConfigs,
+        gnn_cfg: GraphNeuralNetworksConfigs,
+        reg_cfg: RegularizationConfigs,
+    ):
+        super().__init__()
+        # load configs
+        self.global_cfg = global_cfg
+        self.molecular_graph_cfg = molecular_graph_cfg
+        self.gnn_cfg = gnn_cfg
+        self.reg_cfg = reg_cfg
+
+        # Input Block
+        self.input_block = InputBlock(
+            global_cfg=self.global_cfg,
+            molecular_graph_cfg=self.molecular_graph_cfg,
+            gnn_cfg=self.gnn_cfg,
+            reg_cfg=self.reg_cfg,
+        )
+
+        # Transformer Blocks
+        self.transformer_blocks = nn.ModuleList(
+            [
+                EfficientGraphAttentionBlock(
+                    global_cfg=self.global_cfg,
+                    molecular_graph_cfg=self.molecular_graph_cfg,
+                    gnn_cfg=self.gnn_cfg,
+                    reg_cfg=self.reg_cfg,
+                )
+                for _ in range(self.gnn_cfg.num_layers)
+            ]
+        )
+
+        # Readout Layer
+        self.readout_layers = nn.ModuleList(
+            [
+                ReadoutBlock(
+                    global_cfg=self.global_cfg,
+                    gnn_cfg=self.gnn_cfg,
+                    reg_cfg=self.reg_cfg,
+                )
+                for _ in range(self.gnn_cfg.num_layers + 1)
+            ]
+        )
+
+        # Output Block
+        self.output_block = OutputBlock(
+            global_cfg=self.global_cfg,
+            molecular_graph_cfg=self.molecular_graph_cfg,
+            gnn_cfg=self.gnn_cfg,
+            reg_cfg=self.reg_cfg,
+        )
+
+        # Init weights
+        # self.linear_initializer = get_initializer("heorthogonal")
+        self.linear_initializer = nn.init.xavier_uniform_
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            self.linear_initializer(module.weight)
+            if module.bias is not None:
+                module.bias.data.zero_()
+
+    # @torch.compile()
     # @torch.compile(mode='max-autotune')
-    def complied_forward(self, x: GraphAttentionData):
+    def forward(self, x: GraphAttentionData) -> tuple[torch.Tensor, torch.Tensor]:
         # input block
         node_features, edge_features = self.input_block(x)
 
@@ -270,55 +387,3 @@ class EfficientlyScaledAttentionInteratomicPotential(nn.Module, GraphModelMixin)
         )
 
         return energy_output, force_output
-
-    @conditional_grad(torch.enable_grad())
-    def forward(self, data: torch_geometric.data.Batch):
-        # gradient force
-        if self.regress_forces and not self.global_cfg.direct_force:
-            data.pos.requires_grad_(True)
-
-        # preprocess data
-        x = self.data_preprocess(data)
-
-        # forward pass
-        energy_output, force_output = self.complied_forward(x)
-
-        outputs = {"energy": energy_output}
-
-        if self.regress_forces:
-            if not self.global_cfg.direct_force:
-                force_output = self.force_scaler.calc_forces_and_update(
-                    energy_output, data.pos
-                )
-            outputs["forces"] = force_output
-
-        outputs = unpad_results(
-            results=outputs,
-            node_padding_mask=x.node_padding_mask,
-            graph_padding_mask=x.graph_padding_mask,
-        )
-
-        return outputs
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            self.linear_initializer(module.weight)
-            if module.bias is not None:
-                module.bias.data.zero_()
-
-    @torch.jit.ignore
-    def no_weight_decay(self):
-        # no weight decay on layer norms and embeddings
-        # ref: https://discuss.pytorch.org/t/weight-decay-in-the-optimizers-is-a-bad-idea-especially-with-batchnorm/16994
-        no_wd_list = []
-        named_parameters_list = [name for name, _ in self.named_parameters()]
-        for module_name, module in self.named_modules():
-            if isinstance(module, (nn.Linear, nn.Embedding, nn.LayerNorm, nn.RMSNorm)):
-                for parameter_name, _ in module.named_parameters():
-                    if isinstance(module, torch.nn.Linear):
-                        if "weight" in parameter_name:
-                            continue
-                    global_parameter_name = module_name + "." + parameter_name
-                    assert global_parameter_name in named_parameters_list
-                    no_wd_list.append(global_parameter_name)
-        return set(no_wd_list)

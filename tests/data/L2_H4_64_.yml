@@ -9,6 +9,7 @@ model:
   use_fp16_backbone: false
   use_triton: false
   use_rotation_force: false
+  batch_size: 3
 
   # Molecular Graph Configs
   avg_degree: 30
@@ -21,6 +22,7 @@ model:
   max_radius: 5.0
   otf_graph: true
   use_pbc: true
+  use_pbc_single: false
 
   # Graph Neural Networks Configs
   atom_embedding_size: 65

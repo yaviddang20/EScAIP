@@ -31,3 +31,26 @@ class GraphAttentionData:
     node_padding_mask: torch.Tensor
     graph_padding_mask: torch.Tensor
     attn_bias: Union[AttentionBias, None]
+
+
+def flatten_graph_attention_data_with_spec(data, spec):
+    # Flatten based on the in_spec structure
+    flat_data = []
+    for field_name in spec.context[0]:
+        field_value = getattr(data, field_name)
+        if isinstance(field_value, torch.Tensor):
+            flat_data.append(field_value)
+        elif field_value is None:
+            flat_data.append(None)
+        else:
+            # Handle custom types like AttentionBias
+            flat_data.extend(field_value.tree_flatten())
+    return tuple(flat_data)
+
+
+torch.export.register_dataclass(
+    GraphAttentionData, serialized_type_name="GraphAttentionData"
+)
+torch.fx._pytree.register_pytree_flatten_spec(
+    GraphAttentionData, flatten_fn_spec=flatten_graph_attention_data_with_spec
+)

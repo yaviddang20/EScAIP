@@ -8,9 +8,12 @@ class GlobalConfigs:
     direct_force: bool
     use_fp16_backbone: bool
     hidden_size: int  # divisible by 2 and num_heads
+    batch_size: int
     activation: Literal[
         "squared_relu", "gelu", "leaky_relu", "relu", "smelu", "star_relu"
     ]
+    use_export: bool = False
+    use_compile: bool = True
 
 
 @dataclass
@@ -73,6 +76,8 @@ def init_configs(cls: Type[EScAIPConfigs], kwargs: Dict[str, Any]) -> EScAIPConf
             init_kwargs[field.name] = init_configs(field.type, kwargs)
         elif field.name in kwargs:
             init_kwargs[field.name] = kwargs[field.name]
+        elif field.default is not None:
+            init_kwargs[field.name] = field.default
         else:
             raise ValueError(
                 f"Missing required configuration parameter: '{field.name}'"
