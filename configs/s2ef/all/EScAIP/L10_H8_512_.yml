@@ -1,5 +1,5 @@
 includes:
-  - configs/s2ef/2M/base.yml
+  - configs/s2ef/all/base.yml
 
 trainer: equiformerv2_forces
 
@@ -13,7 +13,6 @@ model:
   regress_forces: true
   use_fp16_backbone: false
   batch_size: 16 ## need to be the same as optim.batch_size!!
-  use_compile: true
 
 
   # Molecular Graph Configs
@@ -67,7 +66,7 @@ optim:
     warmup_epochs: 0.1
     lr_min_factor: 0.1         # EquivormerV2 uses 0.01
 
-  max_epochs: 30
+  max_epochs: 12
   clip_grad_norm: 10
   ema_decay: 0.999
 
