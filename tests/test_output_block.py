@@ -19,7 +19,7 @@ def test_output_block():
         (N, hidden_size * (model.gnn_cfg.num_layers + 1)), device=batch.pos.device
     )
 
-    energy_output, force_output = model.output_block(
+    energy_output, force_output = model.exportable_model.output_block(
         node_readouts=node_readout,
         edge_readouts=edge_readout,
         edge_direction=x.edge_direction,

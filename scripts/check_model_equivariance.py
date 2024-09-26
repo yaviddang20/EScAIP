@@ -98,14 +98,23 @@ def main():
     args.debug = True
     config = build_config(args, override_args)
     config["optim"]["batch_size"] = args.batch_size
+    if "batch_size" in config["model"]:
+        config["model"]["batch_size"] = args.batch_size
+        logging.warning(
+            f"Overwriting batch_size in model config to {args.batch_size} for equivariance check"
+        )
+
+    if config["model"]["use_compile"]:
+        logging.warning("Turning off compile for equivariance check")
+        config["model"]["use_compile"] = False
 
     if config["model"]["use_pbc"]:
         logging.warning("Truning off PBC for equivariance check")
         config["model"]["use_pbc"] = False
 
-    if config["model"]["max_neighbors"] < 100:
-        logging.warning("Setting max_neighbors to 100 for equivariance check")
-        config["model"]["max_neighbors"] = 100
+    if config["model"]["max_neighbors"] < 50:
+        logging.warning("Setting max_neighbors to 50 for equivariance check")
+        config["model"]["max_neighbors"] = 50
 
     if "cut_off" in config["model"]:
         logging.warning("Setting cut_off to 5.0 for equivariance check")

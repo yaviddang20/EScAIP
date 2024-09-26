@@ -3,7 +3,7 @@ trainer: ocp
 dataset:
   train:
     format: lmdb
-    src: /pscratch/sd/e/ericqu/OC20/s2ef/2M/train/
+    src: /pscratch/sd/e/ericqu/OC20/s2ef/all/train/
     key_mapping:
       y: energy
       force: forces

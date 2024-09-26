@@ -115,14 +115,21 @@ def pad_batch(
     neighbor_mask,
     node_batch,
     num_graphs,
+    batch_size,
 ):
     """
     Pad the batch to have the same number of nodes in total.
     Needed for torch.compile
+
+    Note: the sampler for multi-node training could sample batchs with different number of graphs.
+    The number of sampled graphs could be smaller or larger than the batch size.
+    This would cause the model to recompile or core dump.
+    Temporarily, setting the max number of graphs to be twice the batch size to mitigate this issue.
+    TODO: look into a better way to handle this.
     """
     device = atomic_numbers.device
     num_nodes, _ = neighbor_list.shape
-    pad_size = max_num_nodes_per_batch * num_graphs - num_nodes
+    pad_size = max_num_nodes_per_batch * batch_size - num_nodes
     assert (
         pad_size >= 0
     ), "Number of nodes exceeds the maximum number of nodes per batch"
@@ -142,10 +149,12 @@ def pad_batch(
 
     # create the padding mask
     node_padding_mask = torch.ones(
-        max_num_nodes_per_batch * num_graphs, dtype=torch.bool, device=device
+        max_num_nodes_per_batch * batch_size, dtype=torch.bool, device=device
     )
     node_padding_mask[num_nodes:] = False
-    graph_padding_mask = torch.ones(num_graphs + 1, dtype=torch.bool, device=device)
+
+    # TODO look into a better way to handle this
+    graph_padding_mask = torch.ones(batch_size * 2, dtype=torch.bool, device=device)
     graph_padding_mask[num_graphs:] = False
 
     return (

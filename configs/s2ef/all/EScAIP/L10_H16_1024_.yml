@@ -1,5 +1,5 @@
 includes:
-  - configs/s2ef/2M/base.yml
+  - configs/s2ef/all/base.yml
 
 trainer: equiformerv2_forces
 
@@ -9,11 +9,10 @@ model:
   # Global Configs
   activation: gelu
   direct_force: true
-  hidden_size: 512
+  hidden_size: 1024
   regress_forces: true
   use_fp16_backbone: false
-  batch_size: 16 ## need to be the same as optim.batch_size!!
-  use_compile: true
+  batch_size: 8 ## need to be the same as optim.batch_size!!
 
 
   # Molecular Graph Configs
@@ -32,7 +31,7 @@ model:
   # Graph Neural Networks Configs
   atom_embedding_size: 128
   atten_name: memory_efficient
-  atten_num_heads: 8
+  atten_num_heads: 16
   edge_distance_embedding_size: 512
   edge_distance_expansion_size: 600
   node_direction_embedding_size: 64
@@ -51,10 +50,10 @@ model:
 
 
 optim:
-  batch_size:                   16         # 6
-  eval_batch_size:              16         # 6
+  batch_size:                   8         # 6
+  eval_batch_size:              8         # 6
   load_balancing: atoms
-  num_workers: 9
+  num_workers: 8
   lr_initial:                   0.0001    # EquivormerV2 uses 0.0004 for signal gpu batch size 8
 
   optimizer: AdamW
@@ -67,7 +66,7 @@ optim:
     warmup_epochs: 0.1
     lr_min_factor: 0.1         # EquivormerV2 uses 0.01
 
-  max_epochs: 30
+  max_epochs: 6
   clip_grad_norm: 10
   ema_decay: 0.999
 

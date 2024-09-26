@@ -9,7 +9,7 @@ def test_input_block():
 
     x = model.data_preprocess(batch)
 
-    output = model.input_block(x)
+    output = model.exportable_model.input_block(x)
     N = x.node_padding_mask.shape[0]
 
     assert output[0].shape == (N, hidden_size)
