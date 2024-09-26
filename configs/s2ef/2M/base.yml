@@ -3,8 +3,7 @@ trainer: ocp
 dataset:
   train:
     format: lmdb
-    # src: /pscratch/sd/e/ericqu/OC20/s2ef/2M/train/
-    src: /datasets01/open_catalyst/oc20/082422/struct_to_energy_forces/train/2M/
+    src: /pscratch/sd/e/ericqu/OC20/s2ef/2M/train/
     key_mapping:
       y: energy
       force: forces
@@ -17,8 +16,7 @@ dataset:
           mean: 0
           stdev: 2.887317180633545
   val:
-    # src: /pscratch/sd/e/ericqu/OC20/s2ef/all/val_12k_sub/
-    src: /datasets01/open_catalyst/oc20/082422/struct_to_energy_forces/val/id_30k/
+    src: /pscratch/sd/e/ericqu/OC20/s2ef/all/val_12k_sub/
 
 logger: wandb
 
