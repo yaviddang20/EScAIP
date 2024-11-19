@@ -1,55 +1,34 @@
 from functools import partial
-import logging
-import time
-import os
 
 import torch
 import torch.nn as nn
 import torch_geometric
 
+from e3nn import o3
+
 from fairchem.core.common.registry import registry
 from fairchem.core.common.utils import conditional_grad
-from fairchem.core.models.base import GraphModelMixin
+from fairchem.core.models.base import GraphModelMixin, HeadInterface
 
-from fairchem.core.models.gemnet_oc.layers.force_scaler import ForceScaler
-from fairchem.core.models.scn.smearing import (
-    GaussianSmearing,
-    LinearSigmoidSmearing,
-    SigmoidSmearing,
-    SiLUSmearing,
-)
-
-from .configs import (
-    EScAIPConfigs,
-    GlobalConfigs,
-    MolecularGraphConfigs,
-    GraphNeuralNetworksConfigs,
-    RegularizationConfigs,
-    init_configs,
-)
+from .configs import EScAIPConfigs, init_configs
 from .custom_types import GraphAttentionData
 from .modules import (
     EfficientGraphAttentionBlock,
     InputBlock,
-    OutputBlock,
     ReadoutBlock,
+    OutputProjection,
+    OutputLayer,
 )
-from .utils.graph_utils import (
-    get_node_direction_expansion,
-    convert_neighbor_list,
-    map_neighbor_list,
-    patch_singleton_atom,
-    pad_batch,
-    unpad_results,
-)
-from .utils.xformers_utils import (
-    attn_bias_for_memory_efficient_attention,
-)
+from .utils.data_preprocess import data_preprocess
+from .utils.nn_utils import no_weight_decay, init_linear_weights
+from .utils.graph_utils import unpad_results, compilable_scatter
 
 
-@registry.register_model("EScAIP")
-class EfficientlyScaledAttentionInteratomicPotential(nn.Module, GraphModelMixin):
-    """ """
+@registry.register_model("EScAIP_backbone")
+class EScAIPBackbone(nn.Module, GraphModelMixin):
+    """
+    Efficiently Scaled Attention Interactomic Potential (EScAIP) backbone model.
+    """
 
     def __init__(
         self,
@@ -68,70 +47,12 @@ class EfficientlyScaledAttentionInteratomicPotential(nn.Module, GraphModelMixin)
         self.regress_forces = cfg.global_cfg.regress_forces
         self.use_pbc = cfg.molecular_graph_cfg.use_pbc
 
-        # edge distance expansion
-        expansion_func = {
-            "gaussian": GaussianSmearing,
-            "sigmoid": SigmoidSmearing,
-            "linear_sigmoid": LinearSigmoidSmearing,
-            "silu": SiLUSmearing,
-        }[self.molecular_graph_cfg.distance_function]
-
-        self.edge_distance_expansion_func = expansion_func(
-            0.0,
-            self.molecular_graph_cfg.max_radius,
-            self.gnn_cfg.edge_distance_expansion_size,
-            basis_width_scalar=2.0,
-        )
-
-        self.exportable_model = EScAIPExportable(
-            global_cfg=self.global_cfg,
-            molecular_graph_cfg=self.molecular_graph_cfg,
-            gnn_cfg=self.gnn_cfg,
-            reg_cfg=self.reg_cfg,
-        )
-
-        # gradient force
-        if self.regress_forces and not self.global_cfg.direct_force:
-            self.force_scaler = ForceScaler()
-
-        # enable torch.set_float32_matmul_precision('high') if not using fp16 backbone
-        if not self.global_cfg.use_fp16_backbone:
-            torch.set_float32_matmul_precision("high")
-        torch._logging.set_logs(recompiles=True)
-
-    def export_and_compile_model(
-        self,
-        data: torch_geometric.data.Batch,
-        export_dir: str = "./",  # TODO: set to checkpoint_dir, but no access now
-    ):
-        start_time = time.time()
-        x = self.data_preprocess(data)
-        export_path = os.path.join(export_dir, "exported_model.pt2")
-        if not os.path.exists(export_path):
-            logging.info("Exporting model...")
-            exported_model = torch.export.export(self.exportable_model, (x,))
-            torch.export.save(exported_model, export_path)
-        else:
-            logging.info(f"Loding model from {export_path}")
-            exported_model = torch.export.load(export_path)
-        logging.info("Compiling model...")
-        compiled_exported_model = torch.compile(exported_model.module())
-        logging.info("Warmup...")
-        _ = compiled_exported_model(x)
-        logging.info("Success")
-        logging.info(f"Time elapsed: {time.time() - start_time:.2f}s")
-        return compiled_exported_model
-
-    def data_preprocess(self, data) -> GraphAttentionData:
-        # atomic numbers
-        atomic_numbers = data.atomic_numbers.long()
-
-        # generate graph
+        # graph generation
         self.use_pbc_single = (
             self.molecular_graph_cfg.use_pbc_single
         )  # TODO: remove this when FairChem fixes the bug
-        graph = self.generate_graph(
-            data=data,
+        generate_graph_fn = partial(
+            self.generate_graph,
             cutoff=self.molecular_graph_cfg.max_radius,
             max_neighbors=self.molecular_graph_cfg.max_neighbors,
             use_pbc=self.molecular_graph_cfg.use_pbc,
@@ -140,169 +61,16 @@ class EfficientlyScaledAttentionInteratomicPotential(nn.Module, GraphModelMixin)
             use_pbc_single=self.molecular_graph_cfg.use_pbc_single,
         )
 
-        # sort edge index according to receiver node
-        edge_index, edge_attr = torch_geometric.utils.sort_edge_index(
-            graph.edge_index,
-            [graph.edge_distance, graph.edge_distance_vec],
-            sort_by_row=False,
-        )
-        edge_distance, edge_distance_vec = edge_attr[0], edge_attr[1]
-
-        # edge directions (for direct force prediction, ref: gemnet)
-        edge_direction = -edge_distance_vec / edge_distance[:, None]
-
-        # edge distance expansion (ref: scn)
-        edge_distance_expansion = self.edge_distance_expansion_func(edge_distance)
-
-        # node direction expansion
-        node_direction_expansion = get_node_direction_expansion(
-            distance_vec=edge_distance_vec,
-            edge_index=edge_index,
-            lmax=self.gnn_cfg.node_direction_expansion_size - 1,
-            num_nodes=data.num_nodes,
+        # data preprocess
+        self.data_preprocess = partial(
+            data_preprocess,
+            generate_graph_fn=generate_graph_fn,
+            global_cfg=self.global_cfg,
+            gnn_cfg=self.gnn_cfg,
+            molecular_graph_cfg=self.molecular_graph_cfg,
         )
 
-        # convert to neighbor list
-        neighbor_list, neighbor_mask, index_mapping = convert_neighbor_list(
-            edge_index, self.molecular_graph_cfg.max_neighbors, data.num_nodes
-        )
-
-        # map neighbor list
-        map_neighbor_list_ = partial(
-            map_neighbor_list,
-            index_mapping=index_mapping,
-            max_neighbors=self.molecular_graph_cfg.max_neighbors,
-            num_nodes=data.num_nodes,
-        )
-        edge_direction = map_neighbor_list_(edge_direction)
-        edge_distance_expansion = map_neighbor_list_(edge_distance_expansion)
-
-        # pad batch
-        (
-            atomic_numbers,
-            node_direction_expansion,
-            edge_distance_expansion,
-            edge_direction,
-            neighbor_list,
-            neighbor_mask,
-            node_batch,
-            node_padding_mask,
-            graph_padding_mask,
-        ) = pad_batch(
-            max_num_nodes_per_batch=self.molecular_graph_cfg.max_num_nodes_per_batch,
-            atomic_numbers=atomic_numbers,
-            node_direction_expansion=node_direction_expansion,
-            edge_distance_expansion=edge_distance_expansion,
-            edge_direction=edge_direction,
-            neighbor_list=neighbor_list,
-            neighbor_mask=neighbor_mask,
-            node_batch=data.batch,
-            num_graphs=data.num_graphs,
-            batch_size=self.global_cfg.batch_size,
-        )
-
-        # patch singleton atom
-        edge_direction, neighbor_list, neighbor_mask = patch_singleton_atom(
-            edge_direction, neighbor_list, neighbor_mask
-        )
-
-        if self.gnn_cfg.atten_name == "xformers":
-            attn_bias = attn_bias_for_memory_efficient_attention(neighbor_mask)
-        elif self.gnn_cfg.atten_name in ["memory_efficient", "flash", "math"]:
-            attn_bias = None
-            torch.backends.cuda.enable_flash_sdp(self.gnn_cfg.atten_name == "flash")
-            torch.backends.cuda.enable_mem_efficient_sdp(
-                self.gnn_cfg.atten_name == "memory_efficient"
-            )
-            torch.backends.cuda.enable_math_sdp(self.gnn_cfg.atten_name == "math")
-        else:
-            raise NotImplementedError(
-                f"Attention name {self.gnn_cfg.atten_name} not implemented"
-            )
-
-        # construct input data
-        x = GraphAttentionData(
-            atomic_numbers=atomic_numbers,
-            node_direction_expansion=node_direction_expansion,
-            edge_distance_expansion=edge_distance_expansion,
-            edge_direction=edge_direction,
-            neighbor_list=neighbor_list,
-            neighbor_mask=neighbor_mask,
-            node_batch=node_batch,
-            node_padding_mask=node_padding_mask,
-            graph_padding_mask=graph_padding_mask,
-            attn_bias=attn_bias,
-        )
-        return x
-
-    @conditional_grad(torch.enable_grad())
-    def forward(self, data: torch_geometric.data.Batch):
-        # gradient force
-        if self.regress_forces and not self.global_cfg.direct_force:
-            data.pos.requires_grad_(True)
-
-        # preprocess data
-        x = self.data_preprocess(data)
-
-        if self.global_cfg.use_export:
-            if not hasattr(self, "compiled_exported_model"):
-                self.compiled_exported_model = self.export_and_compile_model(data)
-            # forward pass
-            energy_output, force_output = self.compiled_exported_model(x)
-        elif self.global_cfg.use_compile:
-            energy_output, force_output = torch.compile(self.exportable_model)(x)
-        else:
-            energy_output, force_output = self.exportable_model(x)
-
-        outputs = {"energy": energy_output}
-
-        if self.regress_forces:
-            if not self.global_cfg.direct_force:
-                force_output = self.force_scaler.calc_forces_and_update(
-                    energy_output, data.pos
-                )
-            outputs["forces"] = force_output
-
-        outputs = unpad_results(
-            results=outputs,
-            node_padding_mask=x.node_padding_mask,
-            graph_padding_mask=x.graph_padding_mask,
-        )
-
-        return outputs
-
-    @torch.jit.ignore
-    def no_weight_decay(self):
-        # no weight decay on layer norms and embeddings
-        # ref: https://discuss.pytorch.org/t/weight-decay-in-the-optimizers-is-a-bad-idea-especially-with-batchnorm/16994
-        no_wd_list = []
-        named_parameters_list = [name for name, _ in self.named_parameters()]
-        for module_name, module in self.named_modules():
-            if isinstance(module, (nn.Linear, nn.Embedding, nn.LayerNorm, nn.RMSNorm)):
-                for parameter_name, _ in module.named_parameters():
-                    if isinstance(module, torch.nn.Linear):
-                        if "weight" in parameter_name:
-                            continue
-                    global_parameter_name = module_name + "." + parameter_name
-                    assert global_parameter_name in named_parameters_list
-                    no_wd_list.append(global_parameter_name)
-        return set(no_wd_list)
-
-
-class EScAIPExportable(nn.Module):
-    def __init__(
-        self,
-        global_cfg: GlobalConfigs,
-        molecular_graph_cfg: MolecularGraphConfigs,
-        gnn_cfg: GraphNeuralNetworksConfigs,
-        reg_cfg: RegularizationConfigs,
-    ):
-        super().__init__()
-        # load configs
-        self.global_cfg = global_cfg
-        self.molecular_graph_cfg = molecular_graph_cfg
-        self.gnn_cfg = gnn_cfg
-        self.reg_cfg = reg_cfg
+        ## Model Components
 
         # Input Block
         self.input_block = InputBlock(
@@ -337,30 +105,30 @@ class EScAIPExportable(nn.Module):
             ]
         )
 
-        # Output Block
-        self.output_block = OutputBlock(
+        # Output Projection
+        self.output_projection = OutputProjection(
             global_cfg=self.global_cfg,
-            molecular_graph_cfg=self.molecular_graph_cfg,
             gnn_cfg=self.gnn_cfg,
             reg_cfg=self.reg_cfg,
         )
 
-        # Init weights
-        # self.linear_initializer = get_initializer("heorthogonal")
-        self.linear_initializer = nn.init.xavier_uniform_
-        self.apply(self._init_weights)
+        # init weights
+        self.apply(init_linear_weights)
 
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            self.linear_initializer(module.weight)
-            if module.bias is not None:
-                module.bias.data.zero_()
+        # enable torch.set_float32_matmul_precision('high') if not using fp16 backbone
+        if not self.global_cfg.use_fp16_backbone:
+            torch.set_float32_matmul_precision("high")
+        torch._logging.set_logs(recompiles=True)
 
-    # @torch.compile()
-    # @torch.compile(mode='max-autotune')
-    def forward(self, x: GraphAttentionData) -> tuple[torch.Tensor, torch.Tensor]:
+        self.forward_fn = (
+            torch.compile(self.compiled_forward)
+            if self.global_cfg.use_compile
+            else self.compiled_forward
+        )
+
+    def compiled_forward(self, data: GraphAttentionData):
         # input block
-        node_features, edge_features = self.input_block(x)
+        node_features, edge_features = self.input_block(data)
 
         # input readout
         readouts = self.readout_layers[0](node_features, edge_features)
@@ -370,20 +138,266 @@ class EScAIPExportable(nn.Module):
         # transformer blocks
         for idx in range(self.gnn_cfg.num_layers):
             node_features, edge_features = self.transformer_blocks[idx](
-                x, node_features, edge_features
+                data, node_features, edge_features
             )
             readouts = self.readout_layers[idx + 1](node_features, edge_features)
             node_readouts.append(readouts[0])
             edge_readouts.append(readouts[1])
 
-        # output block
-        energy_output, force_output = self.output_block(
+        node_features, edge_features = self.output_projection(
             node_readouts=torch.cat(node_readouts, dim=-1),
             edge_readouts=torch.cat(edge_readouts, dim=-1),
-            node_batch=x.node_batch,
-            edge_direction=x.edge_direction,
-            neighbor_mask=x.neighbor_mask,
-            num_graphs=x.graph_padding_mask.shape[0],
         )
 
-        return energy_output, force_output
+        return {
+            "data": data,
+            "node_features": node_features,
+            "edge_features": edge_features,
+        }
+
+    @conditional_grad(torch.enable_grad())
+    def forward(self, data: torch_geometric.data.Batch):
+        # gradient force
+        if self.regress_forces and not self.global_cfg.direct_force:
+            data.pos.requires_grad_(True)
+
+        # preprocess data
+        x = self.data_preprocess(data)
+
+        return self.forward_fn(x)
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return no_weight_decay(self)
+
+
+class EScAIPHeadBase(nn.Module, HeadInterface):
+    def __init__(self, backbone: EScAIPBackbone):
+        super().__init__()
+        self.global_cfg = backbone.global_cfg
+        self.molecular_graph_cfg = backbone.molecular_graph_cfg
+        self.gnn_cfg = backbone.gnn_cfg
+        self.reg_cfg = backbone.reg_cfg
+
+    def post_init(self, gain=1.0):
+        # init weights
+        self.apply(partial(init_linear_weights, gain=gain))
+
+        self.forward_fn = (
+            torch.compile(self.compiled_forward)
+            if self.global_cfg.use_compile
+            else self.compiled_forward
+        )
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return no_weight_decay(self)
+
+
+@registry.register_model("EScAIP_direct_force_head")
+class EScAIPDirectForceHead(EScAIPHeadBase):
+    def __init__(self, backbone: EScAIPBackbone):
+        super().__init__(backbone)
+        self.force_direction_layer = OutputLayer(
+            global_cfg=self.global_cfg,
+            gnn_cfg=self.gnn_cfg,
+            reg_cfg=self.reg_cfg,
+            output_type="Vector",
+        )
+        self.force_magnitude_layer = OutputLayer(
+            global_cfg=self.global_cfg,
+            gnn_cfg=self.gnn_cfg,
+            reg_cfg=self.reg_cfg,
+            output_type="Scalar",
+        )
+
+        self.post_init()
+
+    def compiled_forward(self, edge_features, node_features, data: GraphAttentionData):
+        # get force direction from edge features
+        force_direction = self.force_direction_layer(
+            edge_features
+        )  # (num_nodes, max_neighbor, 3)
+        force_direction = (
+            force_direction * data.edge_direction
+        )  # (num_nodes, max_neighbor, 3)
+        force_direction = (force_direction * data.neighbor_mask.unsqueeze(-1)).sum(
+            dim=1
+        )  # (num_nodes, 3)
+        # get force magnitude from node readouts
+        force_magnitude = self.force_magnitude_layer(node_features)  # (num_nodes, 1)
+        # get output force
+        return force_direction * force_magnitude  # (num_nodes, 3)
+
+    def forward(self, data, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        force_output = self.forward_fn(
+            edge_features=emb["edge_features"],
+            node_features=emb["node_features"],
+            data=emb["data"],
+        )
+
+        return unpad_results(
+            results={"forces": force_output},
+            node_padding_mask=emb["data"].node_padding_mask,
+            graph_padding_mask=emb["data"].graph_padding_mask,
+        )
+
+
+@registry.register_model("EScAIP_energy_head")
+class EScAIPEnergyHead(EScAIPHeadBase):
+    def __init__(self, backbone: EScAIPBackbone):
+        super().__init__(backbone)
+        self.energy_layer = OutputLayer(
+            global_cfg=self.global_cfg,
+            gnn_cfg=self.gnn_cfg,
+            reg_cfg=self.reg_cfg,
+            output_type="Scalar",
+        )
+
+        self.post_init(gain=0.01)
+
+    def compiled_forward(self, node_features, data: GraphAttentionData):
+        energy_output = self.energy_layer(node_features)
+
+        # the following not compatible with torch.compile (grpah break)
+        # energy_output = torch_scatter.scatter(energy_output, node_batch, dim=0, reduce="sum")
+
+        energy_output = compilable_scatter(
+            src=energy_output,
+            index=data.node_batch,
+            dim_size=data.graph_padding_mask.shape[0],
+            dim=0,
+            reduce="sum",
+        )
+        return energy_output
+
+    def forward(self, data, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        energy_output = self.forward_fn(
+            node_features=emb["node_features"],
+            data=emb["data"],
+        )
+        return unpad_results(
+            results={"energy": energy_output},
+            node_padding_mask=emb["data"].node_padding_mask,
+            graph_padding_mask=emb["data"].graph_padding_mask,
+        )
+
+
+@registry.register_model("EScAIP_grad_energy_force_head")
+class EScAIPGradientEnergyForceHead(EScAIPEnergyHead):
+    """
+    Do not support torch.compile
+    """
+
+    def __init__(self, backbone: EScAIPBackbone):
+        super().__init__(backbone)
+
+    def forward(self, data, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        energy_output = self.energy_layer(emb["node_features"])
+
+        # the following not compatible with torch.compile (grpah break)
+        # energy_output = torch_scatter.scatter(energy_output, node_batch, dim=0, reduce="sum")
+
+        energy_output = compilable_scatter(
+            src=energy_output,
+            index=emb["data"].node_batch,
+            dim_size=emb["data"].graph_padding_mask.shape[0],
+            dim=0,
+            reduce="mean",
+        )
+
+        forces_output = (
+            -1
+            * torch.autograd.grad(
+                energy_output.sum(), data.pos, create_graph=self.training
+            )[0]
+        )
+
+        return unpad_results(
+            results={"energy": energy_output, "forces": forces_output},
+            node_padding_mask=emb["data"].node_padding_mask,
+            graph_padding_mask=emb["data"].graph_padding_mask,
+        )
+
+
+@registry.register_model("EScAIP_rank2_head")
+class EScAIPRank2Head(EScAIPHeadBase):
+    """
+    Rank-2 head for EScAIP model. Modified from the Rank2Block for Equiformer V2.
+    """
+
+    def __init__(
+        self,
+        backbone: EScAIPBackbone,
+        output_name: str = "stress",
+    ):
+        super().__init__(backbone)
+        self.output_name = output_name
+        self.scalar_layer = OutputLayer(
+            global_cfg=self.global_cfg,
+            gnn_cfg=self.gnn_cfg,
+            reg_cfg=self.reg_cfg,
+            output_type="Scalar",
+        )
+        self.irreps2_layer = OutputLayer(
+            global_cfg=self.global_cfg,
+            gnn_cfg=self.gnn_cfg,
+            reg_cfg=self.reg_cfg,
+            output_type="Scalar",
+        )
+
+        self.post_init()
+
+    def compiled_forward(self, node_features, edge_features, data: GraphAttentionData):
+        sphere_irrep2 = o3.spherical_harmonics(
+            2, data.edge_direction, True
+        ).detach()  # (num_nodes, max_neighbor, 5)
+
+        # map from invariant to irrep2
+        edge_irrep2 = (
+            sphere_irrep2[:, :, :, None] * edge_features[:, :, None, :]
+        )  # (num_nodes, max_neighbor, 5, h)
+
+        # sum over neighbors
+        neighbor_count = data.neighbor_mask.sum(dim=1, keepdim=True) + 1e-5
+        neighbor_count = neighbor_count.to(edge_irrep2.dtype)
+        node_irrep2 = (
+            edge_irrep2 * data.neighbor_mask.unsqueeze(-1).unsqueeze(-1)
+        ).sum(dim=1) / neighbor_count.unsqueeze(-1)  # (num_nodes, 5, h)
+
+        irrep2_output = self.irreps2_layer(node_irrep2)  # (num_nodes, 5, 1)
+        scalar_output = self.scalar_layer(node_features)  # (num_nodes, 1)
+
+        # get graph level output
+        irrep2_output = compilable_scatter(
+            src=irrep2_output.view(-1, 5),
+            index=data.node_batch,
+            dim_size=data.graph_padding_mask.shape[0],
+            dim=0,
+            reduce="mean",
+        )
+        scalar_output = compilable_scatter(
+            src=scalar_output.view(-1, 1),
+            index=data.node_batch,
+            dim_size=data.graph_padding_mask.shape[0],
+            dim=0,
+            reduce="mean",
+        )
+        return irrep2_output, scalar_output.view(-1)
+
+    def forward(self, data, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        irrep2_output, scalar_output = self.forward_fn(
+            node_features=emb["node_features"],
+            edge_features=emb["edge_features"],
+            data=emb["data"],
+        )
+        output = {
+            f"{self.output_name}_isotropic": scalar_output.unsqueeze(1),
+            f"{self.output_name}_anisotropic": irrep2_output,
+        }
+
+        return unpad_results(
+            results=output,
+            node_padding_mask=emb["data"].node_padding_mask,
+            graph_padding_mask=emb["data"].graph_padding_mask,
+        )

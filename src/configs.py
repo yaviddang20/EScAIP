@@ -12,8 +12,8 @@ class GlobalConfigs:
     activation: Literal[
         "squared_relu", "gelu", "leaky_relu", "relu", "smelu", "star_relu"
     ]
-    use_export: bool = False
     use_compile: bool = True
+    use_padding: bool = True
 
 
 @dataclass
@@ -24,7 +24,6 @@ class MolecularGraphConfigs:
     max_neighbors: int
     max_radius: float
     max_num_elements: int
-    avg_num_nodes: float
     max_num_nodes_per_batch: int
     enforce_max_neighbors_strictly: bool
     distance_function: Literal["gaussian", "sigmoid", "linearsigmoid", "silu"]
@@ -42,12 +41,12 @@ class GraphNeuralNetworksConfigs:
         "math",
         "memory_efficient",
         "flash",
-        "xformers",
     ]
     atten_num_heads: int
     readout_hidden_layer_multiplier: int
     output_hidden_layer_multiplier: int
     ffn_hidden_layer_multiplier: int
+    use_angle_embedding: bool = True
 
 
 @dataclass
