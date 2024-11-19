@@ -1,8 +1,8 @@
 # EScAIP: Efficiently Scaled Attention Interatomic Potential
 
-This repository contains the official implementation of the Efficiently Scaled Attention Interatomic Potential.
+This repository contains the official implementation of the [Efficiently Scaled Attention Interatomic Potential (NeurIPS 2024)](https://openreview.net/forum?id=Y4mBaZu4vy).
 
-Warning: the model is in the transition to the "hydra" configuration of the FairChem and still under active development.
+Current notes: the model is being transitioned to the "hydra" configuration (from FairChem) and so is still under active development. All pre-trained models and checkpoints from the paper will be made public soon once this is done.
 
 ## Install
 
@@ -102,7 +102,7 @@ Some notes on the configs:
 
 ## Pretrained Models
 
-We will release the pretrained models soon (after the model transition is fanalized).
+We will release the pretrained models in the paper soon (after the model transition is fanalized).
 
 ## Citation
 
