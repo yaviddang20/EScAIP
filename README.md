@@ -1,6 +1,8 @@
 # EScAIP: Efficiently Scaled Attention Interatomic Potential
 
-This repository contains the WIP test version of the Efficiently Scaled Attention Interatomic Potential.
+This repository contains the official implementation of the Efficiently Scaled Attention Interatomic Potential.
+
+Warning: the model is in the transition to the "hydra" configuration of the FairChem and still under active development.
 
 ## Install
 
@@ -10,31 +12,14 @@ Step 1: Install mamba solver for conda (optional)
 conda install mamba -n base -c conda-forge
 ```
 
-Step 2: Check the CUDA is in `PATH` and `LD_LIBRARY_PATH`
-
-```bash
-$ echo $PATH | tr ':' '\n' | grep cuda
-/usr/local/cuda/bin
-
-$ echo $LD_LIBRARY_PATH | tr ':' '\n' | grep cuda
-/usr/local/cuda/lib64
-```
-
-If not, add something like following (depends on the location) to your `.bashrc` or `.zshrc`:
-
-```bash
-export PATH="/usr/local/cuda/bin:$PATH"
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64
-```
-
-Step 3: Install the dependencies
+Step 2: Install the dependencies
 
 ```bash
 mamba env create -f env.yml
 conda activate escaip
 ```
 
-Step 4: Install FairChem core package
+Step 3: Install FairChem core package
 
 ```bash
 git submodule update --init --recursive
@@ -113,5 +98,23 @@ Some notes on the configs:
     - `math`: the default attention by pytorch, supports all datatypes and second order gradient.
     - `memory_efficient`: the memory efficient kernel by pytorch, supports fp32 and fp16, but no second order gradient.
     - `flash`: the flash attention kernel by pytorch, supports only fp16, no second order gradient.
-    - `xformers`: the xformers attention kernel, supports fp32 and fp16, no second order gradient. It's also not working with `torch.compile`.
 - The `use_fp16_backbone` will turn the graph attention backbone to fp16, and the output head will still be fp32. For now, we're opting to use AutoMixedPrecision instead, as it's more stable.
+
+## Pretrained Models
+
+We will release the pretrained models soon (after the model transition is fanalized).
+
+## Citation
+
+If you find this work useful, please consider citing the following:
+
+```
+@inproceedings{
+qu2024the,
+title={The Importance of Being Scalable: Improving the Speed and Accuracy of Neural Network Interatomic Potentials Across Chemical Domains},
+author={Eric Qu and Aditi S. Krishnapriyan},
+booktitle={The Thirty-eighth Annual Conference on Neural Information Processing Systems},
+year={2024},
+url={https://openreview.net/forum?id=Y4mBaZu4vy}
+}
+```
