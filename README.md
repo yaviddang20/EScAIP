@@ -3,13 +3,13 @@
 This repository contains the official implementation of the [Efficiently Scaled Attention Interatomic Potential (NeurIPS 2024)](https://openreview.net/forum?id=Y4mBaZu4vy).
 
 > Scaling has been a critical factor in improving model performance and generalization across various fields of machine learning.
-It involves how a model’s performance changes with increases in model size or input data, as well as how efficiently computational resources are utilized to support this growth. 
-Despite successes in scaling other types of machine learning models, the study of scaling in Neural Network Interatomic Potentials (NNIPs) remains limited. NNIPs act as surrogate models for ab initio quantum mechanical calculations, predicting the energy and forces between atoms in molecules and materials based on atomic configurations. The dominant paradigm in this field is to incorporate numerous physical domain constraints into the model, such as symmetry constraints like rotational equivariance. We contend that these increasingly complex domain constraints inhibit the scaling ability of NNIPs, and such strategies are likely to cause model performance to plateau in the long run. In this work, we take an alternative approach and start by systematically studying NNIP scaling properties and strategies. Our findings indicate that scaling the model through attention mechanisms is both efficient and improves model expressivity. These insights motivate us to develop an NNIP architecture designed for scalability: the Efficiently Scaled Attention Interatomic Potential (EScAIP). 
+It involves how a model’s performance changes with increases in model size or input data, as well as how efficiently computational resources are utilized to support this growth.
+Despite successes in scaling other types of machine learning models, the study of scaling in Neural Network Interatomic Potentials (NNIPs) remains limited. NNIPs act as surrogate models for ab initio quantum mechanical calculations, predicting the energy and forces between atoms in molecules and materials based on atomic configurations. The dominant paradigm in this field is to incorporate numerous physical domain constraints into the model, such as symmetry constraints like rotational equivariance. We contend that these increasingly complex domain constraints inhibit the scaling ability of NNIPs, and such strategies are likely to cause model performance to plateau in the long run. In this work, we take an alternative approach and start by systematically studying NNIP scaling properties and strategies. Our findings indicate that scaling the model through attention mechanisms is both efficient and improves model expressivity. These insights motivate us to develop an NNIP architecture designed for scalability: the Efficiently Scaled Attention Interatomic Potential (EScAIP).
 EScAIP leverages a novel multi-head self-attention formulation within graph neural networks, applying attention at the neighbor-level representations.
 Implemented with highly-optimized attention GPU kernels, EScAIP achieves substantial gains in efficiency---at least 10x speed up in inference time, 5x less in memory usage---compared to existing NNIP models. EScAIP also achieves state-of-the-art performance on a wide range of datasets including catalysts (OC20 and OC22), molecules (SPICE), and materials (MPTrj).
 We emphasize that our approach should be thought of as a philosophy rather than a specific model, representing a proof-of-concept towards developing general-purpose NNIPs that achieve better expressivity through scaling, and continue to scale efficiently with increased computational resources and training data.
 
-**Current notes, Nov 2024**: the model is being transitioned to the "hydra" configuration (from FairChem) and so is still under active development. All pre-trained models and checkpoints from the paper will be made public soon once this is done.
+**Feb 2024 update**: We recently discovered that our model relies on a specific older version of the Triton attention kernel for optimal performance, which was recently changed: using newer versions leads to degraded results, especially on the OC20 dataset. We are actively working on tuning the model to be compatible with the latest kernel (see branch kernel_update). We will provide updates on this, and please feel free to reach out if you would like further updates on timelines. If you encounter any issues or you have questions about tuning the model on your datasets of interest, please feel free to open an issue or reach out.
 
 ## Install
 
@@ -19,11 +19,12 @@ Step 1: Install mamba solver for conda (optional)
 conda install mamba -n base -c conda-forge
 ```
 
-Step 2: Install the dependencies
+Step 2: Install the FAIRChem dependencies
 
 ```bash
-mamba env create -f env.yml
-conda activate escaip
+wget https://raw.githubusercontent.com/FAIR-Chem/fairchem/main/packages/env.gpu.yml
+mamba env create -f env.gpu.yml
+conda activate fair-chem
 ```
 
 Step 3: Install FairChem core package
