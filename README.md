@@ -9,7 +9,7 @@ EScAIP leverages a novel multi-head self-attention formulation within graph neur
 Implemented with highly-optimized attention GPU kernels, EScAIP achieves substantial gains in efficiency---at least 10x speed up in inference time, 5x less in memory usage---compared to existing NNIP models. EScAIP also achieves state-of-the-art performance on a wide range of datasets including catalysts (OC20 and OC22), molecules (SPICE), and materials (MPTrj).
 We emphasize that our approach should be thought of as a philosophy rather than a specific model, representing a proof-of-concept towards developing general-purpose NNIPs that achieve better expressivity through scaling, and continue to scale efficiently with increased computational resources and training data.
 
-**Current notes, Nov 2024**: the model is being transitioned to the "hydra" configuration (from FairChem) and so is still under active development. All pre-trained models and checkpoints from the paper will be made public soon once this is done.
+**Feb 2024 update**: We recently discovered that our model relies on a specific older version of the Triton attention kernel for optimal performance, which was recently changed: using newer versions leads to degraded results, especially on the OC20 dataset. We are actively working on tuning the model to be compatible with the latest kernel (see branch kernel_update). We will provide updates on this, and please feel free to reach out if you would like further updates on timelines. If you encounter any issues or you have questions about tuning the model on your datasets of interest, please feel free to open an issue or reach out.
 
 ## Install
 
