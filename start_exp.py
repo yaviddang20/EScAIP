@@ -26,16 +26,16 @@ if __name__ == "__main__":
 
     # Make list of all files in logdir that has 'config_name'
     if args.timestamp_id is not None:
-        indentifier = args.timestamp_id
+        identifier = args.timestamp_id
     elif args.identifier is not None:
-        indentifier = args.identifier
+        identifier = args.identifier
     else:
-        indentifier = config_name
-    log_files = [f for f in logdir.glob(f"*{indentifier}*")]
+        identifier = config_name
+    log_files = [f for f in logdir.glob(f"*{identifier}*")]
     # Count the number, add one and add that to the log file name
     counter = len(log_files) + 1
 
-    tmux_session_name = f"{args.cvd}_v{counter}_{indentifier}"
+    tmux_session_name = f"{args.cvd}_v{counter}_{identifier}"
     cmd = f"CUDA_VISIBLE_DEVICES={args.cvd}"
     cmd += " python main.py"
     cmd += f" --config-yml {args.config_yml}"

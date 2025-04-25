@@ -1,6 +1,6 @@
 slurm:
-  account: xxxx
+  account: dyang20
   constraint: gpu
   gpu_bind: none
-  mail_type: begin,end,fail
-  mail_user: xxxx@xxxx.xxx
+  mail_type: end,fail
+  mail_user: dyang20@berkeley.edu
